@@ -1,0 +1,381 @@
+---
+title: "Pine Tree Distance Prediction Modeling"
+output: 
+  flexdashboard::flex_dashboard:
+    logo: Images/tree_branch.png
+    orientation: rows
+    vertical_layout: scroll
+    source_code: embed
+    theme: 
+      version: 4
+      bootswatch: minty
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library (ggplot2)
+library(tidyverse)
+library(readxl)
+library(broom)
+library(car)
+library(ggfortify)
+library(tidymodels)
+library(vip)
+library(performance)
+library(glmnet)
+library(ggplot2)
+library(plotly)
+library(corrr)
+library(emo)
+library(gghighlight)
+library(portfoliodown)
+trees <- read.csv("Data/Data_1993_Final.csv")
+```
+
+Row {data-width=350}
+-----------------------------------------------------------------------
+
+### Can We Predict the Distance to the Nearest Infected Tree ("DeadDist") Within 1/20th of an Acre ("SDI_20th")?
+
+```{r forest_image1}
+knitr::include_graphics(path = "Images/forest.jpeg") 
+```
+
+### Distance to Nearest Tree According to Stand Density Index (SDI)
+
+```{r data_showcase1}
+plot_tree <- 
+  ggplot(trees, aes(SDI_20th, DeadDist)) +
+  geom_point(aes(colour = TreeDiam), size = 1) +
+  scale_color_gradientn(colours = rainbow(5)) +
+  theme_bw() +
+  gghighlight(DeadDist > 60) + 
+  labs(x = "Stand Density Index at 1/20th Acre (SDI_20th)", y = "Distance to Nearest Tree (DeadDist)")
+ggplotly(plot_tree)
+```
+
+Row {data-width=350, .tabset .tabset-fade}
+-----------------------------------------------------------------------
+
+### Correlation Matrix
+
+```{r tree_cor}
+trees_cor <- trees %>% 
+  select(c(DeadDist, TreeDiam, Infest_Serv2, BA_20th, SDI_20th)) %>%
+  correlate() 
+trees_cor %>% 
+  rearrange() %>% 
+  fashion() %>% 
+  knitr::kable()
+```
+
+Analysis of variables highlights the correlation between the distance to the nearest tree (DeadDist), overall tree diameter (TreeDiam), infestation response within the nearest tree (Infest_Serv2), basal area for trees within an infected area in 1/20th of an acre (BA_20th), and the stand density index within 1/20th of an acre. This matrix indicates a moderate, negative correlation between DeadDist and BA_20th and SDI_20th as well as a strong, positive correlation between SDI_20th and BA_20th. 
+
+### Predicted Significance 
+
+```{r tree_recipe, echo = FALSE}
+trees_recipe <- trees %>% 
+  recipe(DeadDist ~ TreeDiam + Infest_Serv2 +  Neigh_1.5 + SDI_20th) %>% 
+  step_sqrt(all_outcomes()) %>% 
+  step_corr(all_predictors()) 
+
+# trees_recipe %>% 
+  #prep() %>% 
+  #juice()
+
+lm_model <- 
+  linear_reg() %>% 
+  set_engine("lm")
+
+trees_wflow <- 
+  workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(trees_recipe)
+
+trees_fit <- 
+  trees_wflow %>% 
+  fit(data = trees)
+
+trees_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy() %>%
+  knitr::kable()
+```
+
+This prediction table reflects the significance of selected variables in contributed to variance as well as their respective standard errors and statistics. 
+
+### Simple Linear Regression Model
+
+```{r tree_slm_prep, include=FALSE}
+lm.fit=lm(DeadDist~SDI_20th,data=trees)
+summary(lm.fit)
+coefficients(lm.fit)
+names(summary(lm.fit))
+summary(lm.fit)$coefficients
+summary(lm.fit)$r.squared
+                   
+coefficients(summary(lm.fit))
+```
+
+```{r tree_slm, echo=FALSE}
+ggplot(data = trees,aes(x = SDI_20th, y = DeadDist)) +
+  geom_point(color="blue", alpha = 0.1) +
+  theme_bw() +
+  geom_abline(intercept = coefficients(lm.fit)[1], slope = coefficients(lm.fit)[2],
+              colour = "red", size = 2, linetype = "solid") +
+  geom_abline(intercept =coefficients(lm.fit)[1], slope = 3, colour = "seagreen", size = 1, linetype = "dashed") +
+  geom_abline(intercept =coefficients(lm.fit)[1], slope = 2, colour = "seagreen", size = 1, linetype = "dashed") +
+  xlab("Stand Density Index @ 1/20th-acre") +
+  ylab("Distance to Nearest Tree") +
+  theme(axis.title.x =element_text(size = 16), 
+        axis.title.y =element_text(size = 16))
+```
+
+
+```{r trees_ridge1prep, include=FALSE}
+trees_split <- initial_split(trees)
+trees_train <- training(trees_split)
+trees_test <- testing(trees_split)
+
+ridge_mod <-
+  linear_reg(mixture = 0, penalty = 0.1629751) %>%  
+  set_engine("glmnet")
+ridge_mod %>% 
+  translate()
+  
+trees_rec <- trees_train %>% 
+  recipe(DeadDist ~ TreeDiam + Infest_Serv2 + SDI_20th + BA_20th) %>% 
+  step_sqrt(all_outcomes()) %>% 
+  step_corr(all_predictors()) %>% 
+  step_normalize(all_numeric(), -all_outcomes()) %>% 
+  step_zv(all_numeric(), -all_outcomes())
+
+trees_ridge_wflow <- 
+  workflow() %>% 
+  add_model(ridge_mod) %>% 
+  add_recipe(trees_rec)
+trees_ridge_wflow
+
+trees_ridge_fit <- 
+  trees_ridge_wflow %>% 
+  fit(data = trees_train)
+
+trees_ridge_fit %>% 
+  extract_fit_parsnip() %>% 
+  tidy()
+
+trees_ridge_fit %>% 
+  extract_preprocessor()
+
+trees_ridge_fit %>% 
+  extract_spec_parsnip()
+
+last_fit(
+  trees_ridge_wflow,
+  trees_split
+) %>%
+  collect_metrics()
+
+lm(sqrt(DeadDist) ~ TreeDiam + Infest_Serv2 + BA_20th, data = trees)
+```
+
+### Ridge Regression Model
+
+```{r tree_ridge2prep, include=FALSE}
+fm <-as.formula("DeadDist~TreeDiam + Infest_Serv2 + SDI_20th + BA_20th")
+x = model.matrix(fm,trees)[,-1] 
+y = trees$DeadDist
+
+grid=10^seq(10,-2,length=100) 
+ridge.mod=glmnet(x, y, alpha=0, lambda=grid)
+dim(coef(ridge.mod))
+ridge.mod$lambda[50] 
+round(coef(ridge.mod)[,50],4)
+sqrt(sum(coef(ridge.mod)[-1,50]^2))
+ridge.mod$lambda[100]
+round(coef(ridge.mod)[,100],4)
+sqrt(sum(coef(ridge.mod)[-1,100]^2)) 
+
+cv.fit <- cv.glmnet(x,y,alpha=0, lambda=grid)
+plot(cv.fit)
+```
+
+```{r tree_ridge3, echo=FALSE}
+cv.fit$lambda.min
+cv.fit$lambda.1se
+plot(ridge.mod, xvar='lambda', label = TRUE)
+```
+
+```{r tree_ridge2prep2, include=FALSE}
+coef(ridge.mod, s = cv.fit$lambda.min)
+coef(cv.fit, s = "lambda.1se")
+ridge.fitted <- predict(cv.fit, newx = x, s = "lambda.min")
+mean((ridge.fitted - y)^2)
+```
+
+Row {data-width=650}
+-----------------------------------------------------------------------
+
+### Correlation Between Nearest Tree Distance and SDI
+
+```{r predictor_showcase1}
+tree_line <- ggplot(data = trees, aes(SDI_20th, DeadDist)) +
+  geom_smooth(color = "seagreen") +
+  theme_bw() +
+  labs(x = "Stand Density Index at 1/20th Acre (SDI_20th)", y = "Minimum Distance to Nearest Brood Tree (DeadDist)")
+ggplotly(tree_line)
+```
+
+### Regression Model Confidence Intervals
+
+```{r trees_CI1}
+pred.int <-predict(lm.fit, trees, interval = "prediction")
+trees_pred <-cbind(trees, pred.int)
+p <-ggplot(trees_pred,aes(SDI_20th, DeadDist))+
+  geom_point()+
+  stat_smooth(method = lm, linetype = "dashed", size = 0.5)
+p <- p+ 
+  geom_line(aes(y = lwr), color = "red",linetype = "dashed")+
+  geom_line(aes(y = upr), color = "red",linetype = "dashed")+
+  theme_bw()
+p
+```
+
+### Regression Model Residuals
+
+```{r trees_CI2}
+autoplot(lm.fit, which = 1, label.size = 2)+theme_bw()
+```
+
+
+Row {data-width=650}
+-----------------------------------------------------------------------
+
+### Lasso Prediction Model
+
+```{r tree_lasso1prep, include=FALSE}
+set.seed(1234)
+trees_boot <- bootstraps(trees_train)
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+lasso_mod <-
+  linear_reg(mixture = 1, penalty = tune()) %>% 
+  set_engine("glmnet")
+
+lasso_mod %>% 
+  translate()
+
+trees_lasso_wflow <- 
+  workflow() %>% 
+  add_model(lasso_mod) %>% 
+  add_recipe(trees_rec)
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  trees_lasso_wflow,
+  resamples = trees_boot,
+  grid = lambda_grid)
+```
+
+```{r tree_lasso1, echo=FALSE}
+# visual 1
+tree_lasso1 <- lasso_grid %>%
+  collect_metrics() %>%
+  ggplot(aes(penalty, mean, color = .metric)) +
+  geom_errorbar(aes(
+    ymin = mean - std_err,
+    ymax = mean + std_err
+  ),
+  alpha = 0.5
+  ) +
+  geom_line(linewidth = 1.5, color = "seagreen") +
+  facet_wrap(~.metric, scales = "free", nrow = 2) +
+  scale_x_log10() +
+  theme(legend.position = "none")
+
+
+#lowest_rmse <- lasso_grid %>%
+  #select_best("rmse")
+
+#final_lasso <- finalize_workflow(
+  #trees_lasso_wflow,
+  #lowest_rmse)
+
+#final_lasso %>% 
+  #fit(trees_train) %>%
+  #pull_workflow_fit() %>% 
+  #tidy()
+
+tree_lasso1
+```
+
+### Variable Importance Prediction
+
+```{r tree_lasso2prep, include=FALSE}
+set.seed(1234)
+trees_boot <- bootstraps(trees_train)
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+
+lasso_mod <-
+  linear_reg(mixture = 1, penalty = tune()) %>% 
+  set_engine("glmnet")
+
+lasso_mod %>% 
+  translate()
+
+trees_lasso_wflow <- 
+  workflow() %>% 
+  add_model(lasso_mod) %>% 
+  add_recipe(trees_rec)
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+  trees_lasso_wflow,
+  resamples = trees_boot,
+  grid = lambda_grid)
+
+lowest_rmse <- lasso_grid %>%
+  select_best("rmse")
+
+final_lasso <- finalize_workflow(
+  trees_lasso_wflow,
+  lowest_rmse)
+
+final_lasso %>% 
+  fit(trees_train) %>%
+  pull_workflow_fit() %>% 
+  tidy()
+```
+
+```{r tree_lasso2, echo=FALSE}
+final_lasso %>%
+  fit(trees_train) %>%
+  pull_workflow_fit() %>%
+  vi(lambda = lowest_rmse$penalty) %>%
+  mutate(
+    Importance = abs(Importance),
+    Variable = fct_reorder(Variable, Importance)
+  ) %>%
+  ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+  geom_col() +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(y = NULL)
+```
+
+```{r, include = FALSE}
+regline <-predict(lm.fit,data.frame(SDI_20th=(c(1.8, 3.5))),
+                  interval="confidence", data = trees)
+
+newpred <-predict(lm.fit,data.frame(SDI_20th=(c(1.8, 3.5))),interval="prediction", data = trees)
+
+```
+
+```{r portfoliodown, echo=FALSE}
+
+serve_site()
+```
+
+
+
